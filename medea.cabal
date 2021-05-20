@@ -1,4 +1,4 @@
-cabal-version:      2.2
+cabal-version:      3.0
 name:               medea
 version:            1.2.0
 synopsis:           A schema language for JSON.
@@ -15,10 +15,10 @@ author:
   Shaurya Gupta
 
 maintainer:         koz.ross@retro-freedom.nz
-copyright:          Juspay Technologies Pvt Ltd (C) 2020
+copyright:          Juspay Technologies Pvt Ltd (C) 2020-21
 category:           Data
 build-type:         Simple
-tested-with:        GHC ==8.6.5 || ==8.8.4 || ==8.10.1
+tested-with:        GHC ==8.6.5 || ==8.8.4 || ==8.10.4
 extra-source-files:
   .hspec
   CHANGELOG.md

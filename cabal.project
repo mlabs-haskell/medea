@@ -1,0 +1,4 @@
+packages: ./medea.cabal
+
+package medea
+  ghc-options: -Werror

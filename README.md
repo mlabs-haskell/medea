@@ -78,15 +78,17 @@ testing, in the ``conformance`` directory.
 
 ## What does Medea work on?
 
-We support every major GHC version from 8.6 onwards, for its most current minor
-version. At the moment, this means:
+Our CI currently builds against the following GHC versions:
 
 * 8.6.5
 * 8.8.4
-* 8.10.2
+* 8.10.4
 
-We support both Stack and Cabal (v2) builds. We aim to be cross-platform where
-possible - if the dependencies work on the platform, Medea should too.
+We test on the following platforms:
+
+* Linux
+* macOS
+* Windows
 
 ## License
 

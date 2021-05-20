@@ -1,5 +1,10 @@
 # Dev
 
+# 1.2.1
+
+- Remove `stack.yaml`.
+- Require Cabal 3.0.
+
 # 1.2.0
 
 - Widen QuickCheck bounds.
