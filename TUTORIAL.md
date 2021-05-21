@@ -14,7 +14,7 @@ The system is ideal for describing:
 
 In this tutorial, we'll explore the following topics:
 
-1. How to create a schema
+1. How to specify a schema
 2. Defining re-usable type schemas
 3. Defining sum types
 4. Null, boolean, and number types

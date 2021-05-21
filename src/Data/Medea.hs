@@ -1,19 +1,12 @@
-{-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE MultiWayIf #-}
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE Trustworthy #-}
-{-# LANGUAGE TupleSections #-}
 
 -- |
 -- Module: Data.Medea
 -- Description: A JSON schema language validator.
--- Copyright: (C) Juspay Technologies Pvt Ltd, 2020
+-- Copyright: (C) Juspay Technologies Pvt Ltd, 2020-21
 -- License: MIT
 -- Maintainer: koz.ross@retro-freedom.nz
 -- Stability: Experimental
@@ -58,205 +51,248 @@ module Data.Medea
     JSONType (..),
     SchemaInformation (..),
     ValidationError (..),
-    ValidatedJSON,
-    toValue,
-    validAgainst,
+    ValidatedJSON (..),
     validate,
     validateFromFile,
     validateFromHandle,
   )
 where
 
-import Control.Applicative (Alternative (..))
-import Control.Comonad.Cofree (Cofree (..))
 import Control.DeepSeq (NFData (..))
-import Control.Monad (unless)
-import Control.Monad.Except (MonadError (..))
 import Control.Monad.IO.Class (MonadIO (..))
-import Control.Monad.RWS.Strict (RWST (..), evalRWST)
-import Control.Monad.Reader (MonadReader, asks)
-import Control.Monad.State.Strict (MonadState (..), gets)
-import Data.Aeson (Array, Object, Value (..), decodeStrict)
-import qualified Data.ByteString as BS
+import Data.Aeson
+  ( Value,
+    eitherDecodeFileStrict,
+    eitherDecodeStrict,
+  )
 import Data.ByteString (ByteString)
-import Data.Can (Can (..))
-import Data.Coerce (coerce)
-import Data.Data (Data)
-import Data.Foldable (asum, traverse_)
-import Data.Functor (($>))
-import Data.HashMap.Strict (HashMap)
-import qualified Data.HashMap.Strict as HM
+import qualified Data.ByteString as BS
 import Data.Hashable (Hashable (..))
-import qualified Data.Map.Strict as M
-import Data.Medea.Analysis (ArrayType (..), CompiledSchema (..), TypeNode (..), arrayBounds)
-import Data.Medea.JSONType (JSONType (..), typeOf)
+import Data.Medea.Analysis
+  ( TypeNode (AnyNode, CustomNode),
+  )
+import Data.Medea.JSONType (JSONType (..))
 import Data.Medea.Loader
   ( LoaderError (..),
     buildSchema,
     loadSchemaFromFile,
     loadSchemaFromHandle,
   )
-import Data.Medea.Parser.Primitive (Identifier (..), ReservedIdentifier (..), identFromReserved)
+import Data.Medea.Parser.Primitive
+  ( ReservedIdentifier (..),
+    identFromReserved,
+  )
 import Data.Medea.Parser.Types (ParseError (..))
 import Data.Medea.Schema (Schema (..))
 import Data.Medea.ValidJSON (ValidJSONF (..))
-import qualified Data.Set as S
-import Data.Set.NonEmpty
-  ( NESet,
-    dropWhileAntitone,
-    findMin,
-    member,
-    singleton,
-  )
-import Data.Text (Text)
-import qualified Data.Vector as V
-import GHC.Generics (Generic)
+import Data.Text (Text, pack)
+import Data.Vector (Vector)
 import System.IO (Handle)
 
 -- | An annotation, describing which schema a given chunk of JSON was deemed to
 -- be valid against.
+--
+-- @since 1.3.0
 data SchemaInformation
   = -- | No requirements were placed on this chunk.
+    -- @since 1.3.0
     AnySchema
   | -- | Validated as JSON @null@.
+    -- @since 1.3.0
     NullSchema
   | -- | Validated as JSON boolean.
+    -- @since 1.3.0
     BooleanSchema
   | -- | Validated as JSON number.
+    -- @since 1.3.0
     NumberSchema
   | -- | Validated as JSON string.
+    -- @since 1.3.0
     StringSchema
   | -- | Validated as JSON array.
+    -- @since 1.3.0
     ArraySchema
   | -- | Validated as JSON object.
+    -- @since 1.3.0
     ObjectSchema
   | -- | Validated against the start schema.
+    -- @since 1.3.0
     StartSchema
   | -- | Validated against the schema with the given name.
+    -- @since 1.3.0
     UserDefined {-# UNPACK #-} !Text
-  deriving stock (Eq, Data, Show, Generic)
-  deriving anyclass (Hashable, NFData)
+  deriving stock
+    ( -- | @since 1.3.0
+      Eq,
+      -- | @since 1.3.0
+      Show
+    )
 
--- | JSON, annotated with what schemata it was deemed valid against.
-newtype ValidatedJSON = ValidatedJSON (Cofree ValidJSONF SchemaInformation)
-  deriving stock (Data)
-  deriving newtype (Eq, Show)
+-- | @since 1.3.0
+instance Hashable SchemaInformation where
+  {-# INLINEABLE hashWithSalt #-}
+  hashWithSalt salt = \case
+    AnySchema -> salt `hashWithSalt` (0 :: Int)
+    NullSchema -> salt `hashWithSalt` (1 :: Int)
+    BooleanSchema -> salt `hashWithSalt` (2 :: Int)
+    NumberSchema -> salt `hashWithSalt` (3 :: Int)
+    StringSchema -> salt `hashWithSalt` (4 :: Int)
+    ArraySchema -> salt `hashWithSalt` (5 :: Int)
+    ObjectSchema -> salt `hashWithSalt` (6 :: Int)
+    StartSchema -> salt `hashWithSalt` (7 :: Int)
+    UserDefined t -> salt `hashWithSalt` t `hashWithSalt` (8 :: Int)
 
--- Can't coerce-erase the constructor fmap, sigh
+-- | @since 1.3.0
+instance NFData SchemaInformation where
+  {-# INLINEABLE rnf #-}
+  rnf = \case
+    UserDefined t -> seq t ()
+    si -> seq si ()
+
+-- | The result of validation of JSON against a Medea schema.
+--
+-- @since 1.3.0
+data ValidatedJSON
+  = -- | This JSON was deemed invalid, after trying the given schemata. We
+    -- give the exact error for each schema.
+    --
+    -- @since 1.3.0
+    Invalid (Vector (SchemaInformation, ValidationError))
+  | -- | This JSON validated against the given schema, and has the given type.
+    -- @since 1.3.0
+    Valid SchemaInformation (ValidJSONF ValidatedJSON)
+  deriving stock
+    ( -- | @since 1.3.0
+      Eq,
+      -- | @since 1.3.0
+      Show
+    )
+
+-- | @since 1.3.0
 instance NFData ValidatedJSON where
   {-# INLINE rnf #-}
-  rnf (ValidatedJSON (x :< f)) =
-    rnf x `seq` (rnf . fmap ValidatedJSON $ f)
+  rnf = \case
+    Invalid errs -> errs `seq` ()
+    Valid si jsonf -> si `seq` jsonf `seq` ()
 
--- Nor here
+-- | @since 1.3.0
 instance Hashable ValidatedJSON where
   {-# INLINE hashWithSalt #-}
-  hashWithSalt salt (ValidatedJSON (x :< f)) =
-    salt `hashWithSalt` x `hashWithSalt` fmap ValidatedJSON f
-
--- | Convert to an Aeson 'Value', throwing away all schema information.
-toValue :: ValidatedJSON -> Value
-toValue (ValidatedJSON (_ :< f)) = case f of
-  AnythingF v -> v
-  NullF -> Null
-  BooleanF b -> Bool b
-  NumberF n -> Number n
-  StringF s -> String s
-  ArrayF v -> Array . fmap (toValue . coerce) $ v
-  ObjectF hm -> Object . fmap (toValue . coerce) $ hm
-
--- | What schema did this validate against?
-validAgainst :: ValidatedJSON -> SchemaInformation
-validAgainst (ValidatedJSON (label :< _)) = label -- TODO: This is a bit useless right now.
+  hashWithSalt salt = \case
+    Invalid errs -> salt `hashWithSalt` errs `hashWithSalt` (0 :: Int)
+    Valid si jsonf ->
+      salt `hashWithSalt` si `hashWithSalt` jsonf `hashWithSalt` (1 :: Int)
 
 -- | All possible validation errors.
+--
+-- @since 1.3.0
 data ValidationError
-  = EmptyError
-  | -- | We could not parse JSON out of what we were provided.
-    NotJSON
-  | -- | We got a type different to what we expected.
+  = -- | We got a type different to what we expected.
+    -- @since 1.3.0
     WrongType
       !Value
       -- ^ The chunk of JSON.
+      -- @since 1.3.0
       !JSONType
       -- ^ What we expected the type to be.
-  | -- | We expected one of several possibilities, but got something that fits
-    -- none.
-    NotOneOfOptions !Value
+      -- @since 1.3.0
   | -- | We found a JSON object with a property that wasn't specified in its
-    -- schema, and additional properties are forbidden.
-    AdditionalPropFoundButBanned
-      {-# UNPACK #-} !Text
-      -- ^ The property in question.
-      {-# UNPACK #-} !Text
-      -- ^ The name of the specifying schema.
-  | -- | We found a JSON object which is missing a property its schema requires.
-    RequiredPropertyIsMissing
-      {-# UNPACK #-} !Text
-      -- ^ The property in question.
-      {-# UNPACK #-} !Text
-      -- ^ The name of the specifying schema.
+    -- schema, and additional properties are forbidden. Gives the name of the
+    -- property that caused the error.
+    --
+    -- @since 1.3.0
+    AdditionalPropFoundButBanned {-# UNPACK #-} !Text
+  | -- | We found a JSON object which is missing a property its schema
+    -- requires. Gives the name of the property that caused the error.
+    --
+    -- @since 1.3.0
+    RequiredPropertyIsMissing {-# UNPACK #-} !Text
   | -- | We found a JSON array which falls outside of the minimum or maximum
-    -- length constraints its corresponding schema demands.
-    OutOfBoundsArrayLength
-      {-# UNPACK #-} !Text
-      -- ^ The name of the specifying schema.
-      !Value
-      -- ^ The JSON chunk corresponding to the invalid array.
+    -- length constraints its corresponding schema demands. Also gives the JSON
+    -- chunk corresponding to the invalid array.
+    --
+    -- @since 1.3.0
+    OutOfBoundsArrayLength !Value
   | -- | This is a bug - please report it to us!
+    -- @since 1.3.0
     ImplementationError
       {-# UNPACK #-} !Text -- some descriptive text
-  deriving stock (Eq, Show, Generic)
-  deriving anyclass (Hashable)
+  deriving stock
+    ( -- | @since 1.3.0
+      Eq,
+      -- | @since 1.3.0
+      Show
+    )
 
-instance Semigroup ValidationError where
-  EmptyError <> x = x
-  x <> _ = x
-
-instance Monoid ValidationError where
-  mempty = EmptyError
+-- | @since 1.3.0
+instance Hashable ValidationError where
+  {-# INLINEABLE hashWithSalt #-}
+  hashWithSalt salt = \case
+    WrongType v t ->
+      salt `hashWithSalt` v `hashWithSalt` t `hashWithSalt` (0 :: Int)
+    AdditionalPropFoundButBanned prop ->
+      salt `hashWithSalt` prop `hashWithSalt` (1 :: Int)
+    RequiredPropertyIsMissing prop ->
+      salt `hashWithSalt` prop `hashWithSalt` (2 :: Int)
+    OutOfBoundsArrayLength v ->
+      salt `hashWithSalt` v `hashWithSalt` (3 :: Int)
+    ImplementationError err ->
+      salt `hashWithSalt` err `hashWithSalt` (4 :: Int)
 
 -- | Attempt to construct validated JSON from a strict bytestring.
--- This will attempt to decode using Aeson before validating.
+-- This will attempt to decode using Aeson before validating, and will return a
+-- 'Left' containing its textual error message on failure.
 --
--- If this fails, it will return the first failure condition; that is, the one
--- caused by the first node in a depth-first, right-to-left, document-order
--- traversal of the input JSON.
-validate :: Schema -> ByteString -> Either ValidationError ValidatedJSON
-validate scm bs = case decodeStrict bs of
-  Nothing -> throwError NotJSON
-  Just v -> ValidatedJSON <$> go v
-  where
-    go v =
-      fmap fst . evalRWST (runValidationM . checkTypes $ v) scm $ (initialSet, Nothing)
-    initialSet = singleton . CustomNode . identFromReserved $ RStart
+-- @since 1.3.0
+validate :: Schema -> ByteString -> Either Text ValidatedJSON
+validate scm bs = case eitherDecodeStrict bs of
+  Left err -> Left . pack $ err
+  Right val -> Right . validate' val $ scm
 
 -- | Helper for construction of validated JSON from a JSON file.
--- This will attempt to decode using Aeson before validating. This will return
--- errors on failure in the same way as 'validate' does.
+-- This will attempt to decode using Aeson before validating.
 --
 -- This will clean up any file handle(s) if any exceptions are thrown.
+--
+-- @since 1.3.0
 validateFromFile ::
   (MonadIO m) =>
   Schema ->
   FilePath ->
-  m (Either ValidationError ValidatedJSON)
-validateFromFile scm = fmap (validate scm) . liftIO . BS.readFile
+  m (Either Text ValidatedJSON)
+validateFromFile scm fp = go <$> (liftIO . eitherDecodeFileStrict $ fp)
+  where
+    go :: Either String Value -> Either Text ValidatedJSON
+    go = \case
+      Left err -> Left . pack $ err
+      Right val ->
+        Right . validate' val $ scm
 
 -- | Helper for construction of validated JSON from a 'Handle'. This will
--- attempt to decode using Aeson before validating. This will return errors on
--- failure in the same way as 'validate' does.
+-- attempt to decode using Aeson before validating.
 --
 -- This will close the 'Handle' upon finding EOF, or if an exception is thrown.
+--
+-- @since 1.3.0
 validateFromHandle ::
   (MonadIO m) =>
   Schema ->
   Handle ->
-  m (Either ValidationError ValidatedJSON)
-validateFromHandle scm = fmap (validate scm) . liftIO . BS.hGetContents
+  m (Either Text ValidatedJSON)
+validateFromHandle scm h = go . eitherDecodeStrict <$> (liftIO . BS.hGetContents $ h)
+  where
+    go :: Either String Value -> Either Text ValidatedJSON
+    go = \case
+      Left err -> Left . pack $ err
+      Right val ->
+        Right . validate' val $ scm
 
 -- Helpers
 
+validate' :: Value -> Schema -> ValidatedJSON
+validate' val scm = _
+
+{-
 newtype ValidationM a = ValidationM
   { runValidationM ::
       RWST
@@ -422,4 +458,4 @@ textify (Identifier t) = t
 
 isCustom :: TypeNode -> Bool
 isCustom (CustomNode _) = True
-isCustom _ = False
+isCustom _ = False -}

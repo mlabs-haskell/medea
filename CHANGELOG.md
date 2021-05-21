@@ -1,9 +1,18 @@
 # Dev
 
-# 1.2.1
+# 1.3.0
 
 - Remove `stack.yaml`.
 - Require Cabal 3.0.
+- `ValidatedJSON` now represents a best-effort validation result, both
+  successful and not.
+- `Data` instances gone for everything.
+- `Generic` instances gone for everything.
+- `toValue`, `validAgainst` have both been removed.
+- `validate` now returns an `Either` to distinguish parse errors from validation
+  errors.
+- `ValidationError` has changed considerably, including lost constructors, data
+  values and instances.
 
 # 1.2.0
 
